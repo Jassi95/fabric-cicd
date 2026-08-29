@@ -1,0 +1,8 @@
+kind: added
+body: Add opt-in smart diff publishing for Lakehouse shortcuts
+time: 2026-08-29T12:26:10.035+00:00
+custom:
+    Author: github-copilot[bot]
+    AuthorLink: https://github.com/apps/github-copilot
+    Issue: "904"
+    IssueLink: https://github.com/microsoft/fabric-cicd/issues/904
