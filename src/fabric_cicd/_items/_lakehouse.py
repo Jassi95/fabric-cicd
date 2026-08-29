@@ -271,10 +271,13 @@ class ShortcutPublisher(Publisher):
                 logger.info(f"{constants.INDENT}Excluded shortcuts: {excluded_shortcuts}")
 
         shortcuts_to_publish = {_get_shortcut_path(shortcut): shortcut for shortcut in shortcuts}
-        shortcut_paths_to_unpublish = [path for path in deployed_shortcuts if path not in shortcuts_to_publish]
-        self._unpublish_shortcuts(shortcut_paths_to_unpublish)
+        smart_diff_enabled = FeatureFlag.ENABLE_SHORTCUT_SMART_DIFF.value in constants.FEATURE_FLAG
 
-        if FeatureFlag.ENABLE_SHORTCUT_SMART_DIFF.value in constants.FEATURE_FLAG:
+        if shortcuts_to_publish or smart_diff_enabled:
+            shortcut_paths_to_unpublish = [path for path in deployed_shortcuts if path not in shortcuts_to_publish]
+            self._unpublish_shortcuts(shortcut_paths_to_unpublish)
+
+        if smart_diff_enabled:
             unchanged_shortcut_count = 0
             for shortcut_path in list(shortcuts_to_publish):
                 deployed_shortcut = deployed_shortcuts.get(shortcut_path)

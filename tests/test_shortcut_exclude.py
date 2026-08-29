@@ -10,7 +10,7 @@ import pytest
 
 from fabric_cicd import constants
 from fabric_cicd._common._item import Item
-from fabric_cicd._items._lakehouse import LakehousePublisher, ShortcutPublisher
+from fabric_cicd._items._lakehouse import LakehousePublisher, ShortcutPublisher, list_deployed_shortcuts
 from fabric_cicd.constants import FeatureFlag
 from fabric_cicd.fabric_workspace import FabricWorkspace
 
@@ -56,6 +56,52 @@ def create_shortcut_file(shortcuts_data):
     file_obj.name = "shortcuts.metadata.json"
     file_obj.contents = json.dumps(shortcuts_data)
     return file_obj
+
+
+def create_shortcut(name, path="/Tables", target_path=None, item_id="target-item-id"):
+    """Create a OneLake shortcut definition."""
+    return {
+        "name": name,
+        "path": path,
+        "target": {
+            "type": "OneLake",
+            "oneLake": {
+                "path": target_path or f"Tables/{name}",
+                "itemId": item_id,
+                "workspaceId": "target-workspace-id",
+            },
+        },
+    }
+
+
+def set_deployed_shortcuts(mock_fabric_workspace, deployed_shortcuts):
+    """Configure endpoint behavior to return specific deployed shortcuts."""
+
+    def mock_invoke(method, url, **_kwargs):
+        if method == "GET" and "shortcuts" in url:
+            return {"body": {"value": deployed_shortcuts}, "header": {}}
+        return {"body": {}}
+
+    mock_fabric_workspace.endpoint.invoke.side_effect = mock_invoke
+
+
+def get_shortcut_calls(mock_fabric_workspace, method):
+    """Return shortcut API calls for an HTTP method."""
+    return [
+        call
+        for call in mock_fabric_workspace.endpoint.invoke.call_args_list
+        if call.kwargs.get("method") == method and "shortcuts" in call.kwargs.get("url", "")
+    ]
+
+
+@pytest.fixture
+def shortcut_smart_diff_enabled():
+    """Enable shortcut smart diff for the duration of a test."""
+    original_flags = constants.FEATURE_FLAG.copy()
+    constants.FEATURE_FLAG.add(FeatureFlag.ENABLE_SHORTCUT_SMART_DIFF.value)
+    yield
+    constants.FEATURE_FLAG.clear()
+    constants.FEATURE_FLAG.update(original_flags)
 
 
 def test_process_shortcuts_with_exclude_regex_filters_shortcuts(mock_fabric_workspace, mock_item):
@@ -306,6 +352,103 @@ def test_process_shortcuts_with_complex_regex_pattern(mock_fabric_workspace, moc
     # Verify the published shortcut is the prod one
     published_shortcut = post_calls[0][1]["body"]
     assert published_shortcut["name"] == "prod_shortcut"
+
+
+@pytest.mark.usefixtures("shortcut_smart_diff_enabled")
+def test_shortcut_smart_diff_skips_unchanged_shortcuts(mock_fabric_workspace, mock_item):
+    """Smart diff skips unchanged shortcuts, including server-managed fields."""
+    shortcut = create_shortcut("unchanged")
+    deployed_shortcut = {**shortcut, "serverManaged": {"createdBy": "system"}}
+    mock_item.item_files = [create_shortcut_file([shortcut])]
+    set_deployed_shortcuts(mock_fabric_workspace, [deployed_shortcut])
+
+    ShortcutPublisher(mock_fabric_workspace, mock_item).publish_all()
+
+    assert get_shortcut_calls(mock_fabric_workspace, "POST") == []
+
+
+@pytest.mark.usefixtures("shortcut_smart_diff_enabled")
+def test_shortcut_smart_diff_publishes_changed_and_new_and_removes_old(mock_fabric_workspace, mock_item):
+    """Smart diff publishes changed/new shortcuts and removes absent shortcuts."""
+    unchanged = create_shortcut("unchanged")
+    changed = create_shortcut("changed", target_path="Tables/new")
+    new = create_shortcut("new")
+    deployed_shortcuts = [
+        unchanged,
+        create_shortcut("changed", target_path="Tables/old"),
+        create_shortcut("removed", path="/Files", target_path="Files/removed"),
+    ]
+    mock_item.item_files = [create_shortcut_file([unchanged, changed, new])]
+    set_deployed_shortcuts(mock_fabric_workspace, deployed_shortcuts)
+
+    ShortcutPublisher(mock_fabric_workspace, mock_item).publish_all()
+
+    post_calls = get_shortcut_calls(mock_fabric_workspace, "POST")
+    assert {call.kwargs["body"]["name"] for call in post_calls} == {"changed", "new"}
+    delete_calls = get_shortcut_calls(mock_fabric_workspace, "DELETE")
+    assert len(delete_calls) == 1
+    assert delete_calls[0].kwargs["url"].endswith("/Files/removed")
+
+
+@pytest.mark.usefixtures("shortcut_smart_diff_enabled")
+def test_shortcut_smart_diff_removes_all_shortcuts_when_repository_is_empty(mock_fabric_workspace, mock_item):
+    """Smart diff removes deployed shortcuts when the repository list is empty."""
+    mock_item.item_files = [create_shortcut_file([])]
+    set_deployed_shortcuts(mock_fabric_workspace, [create_shortcut("removed")])
+
+    ShortcutPublisher(mock_fabric_workspace, mock_item).publish_all()
+
+    assert len(get_shortcut_calls(mock_fabric_workspace, "DELETE")) == 1
+    assert get_shortcut_calls(mock_fabric_workspace, "POST") == []
+
+
+@pytest.mark.usefixtures("shortcut_smart_diff_enabled")
+def test_shortcut_smart_diff_resolves_default_lakehouse_id_without_mutation(mock_fabric_workspace, mock_item):
+    """Smart diff compares the resolved local lakehouse ID without mutating metadata."""
+    shortcut = create_shortcut("relative", item_id=constants.DEFAULT_GUID)
+    deployed_shortcut = create_shortcut("relative", item_id=mock_item.guid)
+    mock_item.item_files = [create_shortcut_file([shortcut])]
+    set_deployed_shortcuts(mock_fabric_workspace, [deployed_shortcut])
+
+    ShortcutPublisher(mock_fabric_workspace, mock_item).publish_all()
+
+    assert get_shortcut_calls(mock_fabric_workspace, "POST") == []
+    assert shortcut["target"]["oneLake"]["itemId"] == constants.DEFAULT_GUID
+
+
+def test_shortcut_smart_diff_disabled_publishes_unchanged_shortcuts(mock_fabric_workspace, mock_item):
+    """Without smart diff, existing behavior republishes unchanged shortcuts."""
+    shortcut = create_shortcut("unchanged")
+    mock_item.item_files = [create_shortcut_file([shortcut])]
+    set_deployed_shortcuts(mock_fabric_workspace, [shortcut])
+
+    ShortcutPublisher(mock_fabric_workspace, mock_item).publish_all()
+
+    assert len(get_shortcut_calls(mock_fabric_workspace, "POST")) == 1
+
+
+def test_shortcut_smart_diff_disabled_keeps_empty_repository_behavior(mock_fabric_workspace, mock_item):
+    """Without smart diff, an empty repository list does not remove deployed shortcuts."""
+    mock_item.item_files = [create_shortcut_file([])]
+    set_deployed_shortcuts(mock_fabric_workspace, [create_shortcut("existing")])
+
+    ShortcutPublisher(mock_fabric_workspace, mock_item).publish_all()
+
+    assert get_shortcut_calls(mock_fabric_workspace, "DELETE") == []
+
+
+def test_list_deployed_shortcuts_collects_paginated_definitions(mock_fabric_workspace, mock_item):
+    """Deployed shortcut listing retains definitions across pages."""
+    first = create_shortcut("first")
+    second = create_shortcut("second", path="/Files", target_path="Files/second")
+    mock_fabric_workspace.endpoint.invoke.side_effect = [
+        {"body": {"value": [first]}, "header": {"continuationUri": "next-page"}},
+        {"body": {"value": [second]}, "header": {}},
+    ]
+
+    deployed_shortcuts = list_deployed_shortcuts(mock_fabric_workspace, mock_item)
+
+    assert deployed_shortcuts == {"/Tables/first": first, "/Files/second": second}
 
 
 # =============================================================================
