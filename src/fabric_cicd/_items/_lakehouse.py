@@ -177,8 +177,7 @@ class ShortcutPublisher(Publisher):
         """Compare repository fields while ignoring extra server-managed fields."""
         if isinstance(repository_shortcut, dict):
             return isinstance(deployed_shortcut, dict) and all(
-                key in deployed_shortcut
-                and ShortcutPublisher._is_shortcut_subset_match(value, deployed_shortcut[key])
+                key in deployed_shortcut and ShortcutPublisher._is_shortcut_subset_match(value, deployed_shortcut[key])
                 for key, value in repository_shortcut.items()
             )
 
