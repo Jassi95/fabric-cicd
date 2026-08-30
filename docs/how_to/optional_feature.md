@@ -20,6 +20,7 @@ append_feature_flag("<specific_flag>")
 | ----------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------ |
 | `enable_bulk_publish`                     | Deploy all items in a single API call instead of one at a time (uses the bulk import beta API) | ☑️           |
 | `enable_shortcut_publish`                 | Deploy shortcuts with the Lakehouse                                                            |              |
+| `enable_shortcut_smart_diff`              | Deploy only new or changed shortcuts and remove shortcuts absent from the repository            |              |
 | `continue_on_shortcut_failure`            | Allow deployment to continue even when shortcuts fail to publish                               |              |
 | `disable_workspace_folder_publish`        | Disable deploying workspace sub folders                                                        |              |
 | `enable_environment_variable_replacement` | Enable the use of pipeline variables for parameterization                                      |              |
@@ -69,6 +70,8 @@ from fabric_cicd import get_supported_feature_flags
 get_supported_feature_flags()
 # ['continue_on_shortcut_failure', 'disable_workspace_folder_publish', 'enable_bulk_publish', ...]
 ```
+
+`enable_shortcut_smart_diff` only affects shortcut deployment when `enable_shortcut_publish` is also enabled.
 
 ## Debugging
 
